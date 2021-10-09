@@ -2,7 +2,7 @@
 #
 # $Id$
 #
-# 2020 by Axel Hermann
+# 2019 by Axel Hermann
 #
 # FHEM Forum : 
 #
@@ -10,7 +10,11 @@
 
 # Version -   Date   - description
 # ah  1.0 - 19.04.20 - first version
-# ah  1.1 - 04.06.20 - delete median
+# ah  1.1 - 10.09.21 - delete $hash->{helper}->{darr}
+#                    - delete unused median
+#                    - $attr{global}{modpath} instead of cwd()
+#                    - NumStableVals default to 10
+#                    - clean up code
 
 package main;
 
@@ -25,12 +29,6 @@ use constant MODULEVERSION => '1.1';
 #Prototypes
 sub DLJK_Disconnect($);
 sub DLJK_Log($); #for development
-
-my %DLJK_sets =
-(
-  "Connect"           =>  "noArg",
-  "Disconnect"        =>  "noArg"
-);
 
 sub DLJK_Initialize($)
 {
@@ -69,7 +67,7 @@ sub DLJK_Define($$)
 
   # add a default baud rate (9600), if not given by user
   $dev .= '@9600' if(not $dev =~ m/\@\d+$/);
-
+  
   # set the device to open
   $hash->{DeviceName} = $dev;
 
@@ -114,30 +112,30 @@ sub DLJK_Read($)
   my $buffer = $hash->{helper}{PARTIAL};
   $buffer .= $data;
   my $len = length($buffer);
-
-  #push @{$hash->{helper}->{darr}}, $qstr;
   
   if ($len >= 4)
   {
-    my $foundHeader = 0;
     my $sum = 0;
     my $anz = 0;
     my $SumOk = 0;
+    my @sbuffer = split(//, $buffer);
+    
+    if (ord($sbuffer[0]) == 0xFF)  #header present?
+    {
+      foreach (@sbuffer) 
+      {
+        $_ = ord($_);
+      }
+      $anz = @sbuffer;
+    }
     
     readingsBeginUpdate($hash);
-
-    foreach my $char (split //, $buffer) 
-    {
-      $foundHeader = 1 if (ord($char) == 0xFF);
-      push @{$hash->{helper}->{darr}}, ord($char) if ($foundHeader == 1);
-    }
-    $anz = scalar(@{$hash->{helper}->{darr}});
     
     if ($anz == 4)
     {
-      my $AktVal = $hash->{helper}->{darr}[1]*256 | $hash->{helper}->{darr}[2];
-      $sum = ($hash->{helper}->{darr}[0] + $hash->{helper}->{darr}[1] + $hash->{helper}->{darr}[2]) & 0x00FF;
-      $SumOk = $hash->{helper}->{darr}[3] == $sum;
+      my $AktVal = $sbuffer[1]*256 | $sbuffer[2];
+      $sum = ($sbuffer[0] + $sbuffer[1] + $sbuffer[2]) & 0x00FF;
+      $SumOk = $sbuffer[3] == $sum;
       if ($SumOk)
       {
         push @{$hash->{helper}->{dValarr}}, $AktVal;
@@ -149,7 +147,7 @@ sub DLJK_Read($)
     #x Werte sollen stabil sein
     if ($hash->{helper}->{dValarr})
     {
-      my $dummy = shift @{$hash->{helper}->{dValarr}} if (scalar(@{$hash->{helper}->{dValarr}}) >= AttrVal($name, "NumStableVals", 3));
+      my $dummy = shift @{$hash->{helper}->{dValarr}} if (@{$hash->{helper}->{dValarr}} >= AttrVal($name, "NumStableVals", 10));
       my $Val = -1;
       my $ValsStable = 1;
       
@@ -168,11 +166,11 @@ sub DLJK_Read($)
         }
       }
       
-      my $Val_old = ReadingsNum("$name", "Distance", -1);
+      my $Val_old = -2; #ReadingsNum("$name", "Distance", -1);
       
       if ($ValsStable)
       {
-        #if ($Val != $Val_old)
+        if ($Val != $Val_old)
         {
           readingsBulkUpdate($hash, "Distance", $Val);
           #readingsSingleUpdate($hash, "Distance", $Val, 1);
@@ -200,13 +198,12 @@ sub DLJK_Read($)
       }
     }
     
-    DLJK_Log("DLJK ".__LINE__.": Read: $hash->{helper}->{darr}[0] ".
-                              "$hash->{helper}->{darr}[1] ".
-                              "$hash->{helper}->{darr}[2] ".
-                              "$hash->{helper}->{darr}[3] SumOk: $SumOk" ) if (AttrVal($name, "DebugLog", "off") eq "on");
+    DLJK_Log("DLJK ".__LINE__.": SRead: $sbuffer[0] ".
+                              "$sbuffer[1] ".
+                              "$sbuffer[2] ".
+                              "$sbuffer[3] SumOk: $SumOk" ) if (AttrVal($name, "DebugLog", "off") eq "on");
                               
     readingsEndUpdate($hash, 1);
-    undef $hash->{helper}->{darr};
     $buffer = "";
   }
   
@@ -241,6 +238,8 @@ sub DLJK_Disconnect($)
 {
   my ($hash) = @_;
 
+  $hash->{ELMState} = "disconnected";
+
   # close the connection
   DevIo_CloseDev($hash);
 
@@ -263,9 +262,8 @@ sub DLJK_Log($)
   my ($str) = @_;
   my $strout = $str;
   my $fh = undef;
-  my $cwd = getcwd();
 
-  open($fh, ">>:encoding(UTF-8)",  "$cwd/FHEM/70_DLJK_Log.log") || return undef;
+  open($fh, ">>:encoding(UTF-8)",  "$attr{global}{modpath}/FHEM/70_DLJK_Log.log") || return undef;
   $strout =~ s/\r/<\\r>/g;
   $strout =~ s/\n/<\\n>/g;
   print $fh DLJK_getLoggingTime().": ".$strout."\n";
